@@ -1,7 +1,7 @@
 {
   "upstream_repo": "CVHub520/X-AnyLabeling-Server",
-  "version": null,
-  "upstream_sha": null,
-  "checked_at": null,
+  "version": "v0.0.11",
+  "upstream_sha": "4e15384d6f12584dbbd0aafe5f738759194dae3f",
+  "checked_at": "2026-07-30T10:50:11Z",
   "queued_variants": []
 }
