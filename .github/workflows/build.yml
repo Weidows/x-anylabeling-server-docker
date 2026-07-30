@@ -90,11 +90,17 @@ jobs:
                  | tr -d '[]" ' | tr ',' '\n' | grep -v '^$' | jq -R . | jq -sc .)
           echo "请求的变体: $WANT"
 
+          # cache_* 留空表示不用 GitHub Actions 缓存: 缓存配额是每仓库 10GB，
+          # all(~6GB) 和 cuda(~10GB+) 一进来就会把 base 的缓存挤掉，还可能让
+          # cache export 直接失败，而这两个变体只在上游发版时才重建，缓存收益很低。
           jq -nc --argjson want "$WANT" '
             [
-              {name:"base", file:"Dockerfile",      target:"base",    desc:"CPU / 仅核心依赖"},
-              {name:"all",  file:"Dockerfile",      target:"all",     desc:"CPU / 全部 extras"},
-              {name:"cuda", file:"Dockerfile.cuda", target:"runtime", desc:"CUDA 12.6 / 全部 extras"}
+              {name:"base", file:"Dockerfile",      target:"base",    desc:"CPU / 仅核心依赖",
+               cache_from:"type=gha,scope=base", cache_to:"type=gha,mode=max,scope=base"},
+              {name:"all",  file:"Dockerfile",      target:"all",     desc:"CPU / 全部 extras",
+               cache_from:"", cache_to:""},
+              {name:"cuda", file:"Dockerfile.cuda", target:"runtime", desc:"CUDA 12.6 / 全部 extras",
+               cache_from:"", cache_to:""}
             ] | map(select(.name as $n | $want | index($n)))
           ' > matrix.json
 
@@ -200,9 +206,9 @@ jobs:
             UPSTREAM_REPO=${{ env.UPSTREAM_REPO }}
             UPSTREAM_REF=${{ needs.prepare.outputs.version }}
             BUILD_DATE=${{ needs.prepare.outputs.build_date }}
-          # cuda / all 的层加起来会超过 GitHub 10GB 缓存上限，只缓存 base 的全部层
-          cache-from: type=gha,scope=${{ matrix.variant.name }}
-          cache-to: type=gha,mode=${{ matrix.variant.name == 'base' && 'max' || 'min' }},scope=${{ matrix.variant.name }}
+          # 见 prepare 里的说明: 只有 base 用缓存，all / cuda 留空
+          cache-from: ${{ matrix.variant.cache_from }}
+          cache-to: ${{ matrix.variant.cache_to }}
 
       - name: 写入构建摘要
         run: |
