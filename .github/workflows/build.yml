@@ -103,7 +103,7 @@ jobs:
                smoke:true},
               {name:"cuda", file:"Dockerfile.cuda", target:"runtime", desc:"CUDA 12.6 / 全部 extras",
                cache_from:"", cache_to:"",
-               smoke:false}
+               smoke:true}
             ] | map(select(.name as $n | $want | index($n)))
           ' > matrix.json
 
@@ -213,8 +213,9 @@ jobs:
           cache-from: ${{ matrix.variant.cache_from }}
           cache-to: ${{ matrix.variant.cache_to }}
 
-      # cuda 跳过: 拉回一个 10GB 级镜像会挤掉 runner 剩余磁盘，
-      # 而且没有 GPU 的 runner 上这个测试能验证的东西也有限
+      # 只验证「构建成功」是不够的: base 曾经能构建出来但服务起不来
+      # （上游核心依赖漏了 packaging），就是这一步抓到的。
+      # 没有 GPU 的 runner 验证不了 cuda 的推理，但至少能确认服务能起。
       - name: 冒烟测试（启动容器并请求 /health）
         if: matrix.variant.smoke
         env:
@@ -222,6 +223,10 @@ jobs:
         run: |
           set -euo pipefail
           IMG=$(printf '%s\n' "$TAGS" | head -n1)
+
+          # 镜像已经推走了，buildkit 缓存没用了，清掉给 pull 腾磁盘（cuda 有好几个 GB）
+          docker buildx prune -af >/dev/null 2>&1 || true
+          df -h / | tail -n1
 
           docker pull -q "$IMG"
           docker image inspect "$IMG" --format '{{.Size}}' \
