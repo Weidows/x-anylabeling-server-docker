@@ -3,6 +3,8 @@
 [X-AnyLabeling-Server](https://github.com/CVHub520/X-AnyLabeling-Server) 的非官方
 Docker 镜像。上游没有提供官方镜像，这个仓库按周检查上游 release，有新版本就自动构建并推送。
 
+- **构建配置与 Issue**: https://github.com/Weidows/x-anylabeling-server-docker
+- **上游项目**: https://github.com/CVHub520/X-AnyLabeling-Server
 - Docker Hub: [`weidows/x-anylabeling-server-docker`](https://hub.docker.com/r/weidows/x-anylabeling-server-docker)
 - GHCR: `ghcr.io/weidows/x-anylabeling-server-docker`
 
@@ -135,7 +137,10 @@ Actions → **Build and push images** → Run workflow：
 GHCR 用内置 `GITHUB_TOKEN`，不需要配置。Docker Hub 需要两个 secret：
 
 1. 去 [Docker Hub → Account Settings → Personal access tokens](https://app.docker.com/settings/personal-access-tokens)
-   新建一个 token，权限选 **Read & Write**
+   新建一个 token：
+   - 只推镜像 → **Read & Write** 就够
+   - 还要自动同步仓库描述 → 必须 **Read, Write, Delete**（Docker Hub 改描述的
+     接口不接受只有 read/write 的 token，会 401）
 2. 在本仓库设置：
 
 ```bash
@@ -147,10 +152,26 @@ gh secret set DOCKERHUB_TOKEN -R Weidows/x-anylabeling-server-docker   # 粘贴 
 
 `DOCKERHUB_USERNAME` 必须是 Docker Hub 的账号名，而且要和工作流里
 `DOCKERHUB_IMAGE` 的命名空间一致（`weidows/...`）。如果你的 Docker Hub 用户名
-不是 `weidows`，同时改一下两个工作流里的 `DOCKERHUB_IMAGE`。
+不是 `weidows`，三个工作流里的 `DOCKERHUB_IMAGE` 都要改。
 
 **没配 secret 也能用**：工作流会检测凭据，缺失时打一条 warning 然后只推 GHCR，
 不会失败。等你配好之后，下一次定时检查会自动把缺的 Docker Hub 标签补上。
+
+### Docker Hub 页面上的描述
+
+Docker Hub 不会从 GitHub 自动同步描述（那是旧的 Automated Builds，现在属于付费
+功能），所以默认拉过去的镜像页面是空的。`sync-dockerhub-description.yml` 会在
+README 变更时把它推上去：
+
+- **overview** ← 本文件，相对链接会自动补成指向本仓库的绝对链接
+- **short description** ← 本仓库在 GitHub 上的 description 字段（上限 100 字节）
+
+两点前提：token 要有 delete 权限（见上），而且 **Docker Hub 上的仓库必须已经
+存在** —— 描述接口是 PATCH，仓库不存在会 404。所以顺序是先推一次镜像（或手动
+建好仓库），再同步描述。
+
+不想给 token 加 delete 权限的话，直接在 Docker Hub 仓库设置里手动粘贴一次也行，
+反正这段内容很少变。
 
 ## 构建实现
 

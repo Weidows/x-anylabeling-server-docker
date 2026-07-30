@@ -1,0 +1,48 @@
+name: Sync Docker Hub description
+
+# Docker Hub 不会从 GitHub 自动同步描述（那是旧的 Automated Builds，现在是付费功能），
+# 只能调它的 API 覆盖 overview 和 short description。
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - .github/workflows/sync-dockerhub-description.yml
+  workflow_dispatch:
+
+env:
+  DOCKERHUB_IMAGE: weidows/x-anylabeling-server-docker
+
+jobs:
+  sync:
+    name: 同步 README 到 Docker Hub
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 检测 Docker Hub 凭据
+        id: creds
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 DOCKERHUB_TOKEN，跳过描述同步"
+          fi
+
+      - name: 同步描述
+        if: steps.creds.outputs.enabled == 'true'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # 注意: 改描述需要 read/write/delete 权限的 PAT，只有 read/write 会 401
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
+          # 把 README 里的相对链接（比如 LICENSE）补成指向本仓库的绝对链接，
+          # 否则在 Docker Hub 页面上是死链
+          enable-url-completion: true
