@@ -1,0 +1,160 @@
+name: Watch upstream releases
+
+on:
+  schedule:
+    # 每周一 03:17 UTC（北京时间 11:17）。GitHub 的 cron 队列高峰会延迟，
+    # 所以避开整点。
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '强制重建上游最新版（忽略"镜像已存在"判断）'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  UPSTREAM_REPO: CVHub520/X-AnyLabeling-Server
+  DOCKERHUB_IMAGE: weidows/x-anylabeling-server-docker
+
+jobs:
+  check:
+    name: 检查上游 release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      variants: ${{ steps.check.outputs.variants }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 检测 Docker Hub 凭据
+        id: creds
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 DOCKERHUB_TOKEN，只检查 GHCR"
+          fi
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 登录 Docker Hub
+        if: steps.creds.outputs.enabled == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 对比上游版本与已有镜像
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_SLUG: ${{ github.repository }}
+          FORCE: ${{ inputs.force }}
+          USE_DOCKERHUB: ${{ steps.creds.outputs.enabled }}
+        run: |
+          set -euo pipefail
+
+          VERSION=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq '.tag_name')
+          SHA=$(gh api "repos/${UPSTREAM_REPO}/git/ref/tags/${VERSION}" --jq '.object.sha' 2>/dev/null || echo "")
+          echo "上游最新 release: $VERSION (${SHA:-sha 未知})"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          IMAGES="ghcr.io/$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')"
+          if [ "$USE_DOCKERHUB" = "true" ]; then
+            IMAGES="$IMAGES docker.io/${DOCKERHUB_IMAGE}"
+          fi
+          echo "检查的 registry: $IMAGES"
+
+          # 每个变体拿一个代表性标签探测。任一 registry 缺这个标签就重建该变体，
+          # 这样上次失败的变体、或后加的 Docker Hub 都能在下次自动补齐。
+          declare -A PROBE=(
+            [base]="${VERSION}-base"
+            [all]="${VERSION}"
+            [cuda]="${VERSION}-cuda"
+          )
+
+          MISSING=""
+          for V in base all cuda; do
+            TAG="${PROBE[$V]}"
+            if [ "$FORCE" = "true" ]; then
+              echo "[$V] 强制重建"
+              MISSING="${MISSING}${MISSING:+,}$V"
+              continue
+            fi
+            for IMG in $IMAGES; do
+              if docker manifest inspect "${IMG}:${TAG}" >/dev/null 2>&1; then
+                echo "[$V] 已存在: ${IMG}:${TAG}"
+              else
+                echo "[$V] 缺失: ${IMG}:${TAG}"
+                MISSING="${MISSING}${MISSING:+,}$V"
+                break
+              fi
+            done
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "需要构建: $MISSING"
+            echo "variants=$MISSING" >> "$GITHUB_OUTPUT"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$VERSION 的所有变体都已发布，无需构建"
+            echo "variants=" >> "$GITHUB_OUTPUT"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 更新 version.json
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          SHA: ${{ steps.check.outputs.upstream_sha }}
+          PENDING: ${{ steps.check.outputs.variants }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repo "$UPSTREAM_REPO" \
+            --arg version "$VERSION" \
+            --arg sha "$SHA" \
+            --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg pending "$PENDING" \
+            '{
+              upstream_repo: $repo,
+              version: $version,
+              upstream_sha: (if $sha == "" then null else $sha end),
+              checked_at: $checked_at,
+              queued_variants: (if $pending == "" then [] else ($pending | split(",")) end)
+            }' > version.json
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add version.json
+          # 每周提交一次也是刻意的: 60 天无仓库活动 GitHub 会自动停掉 schedule
+          git diff --staged --quiet || git commit -m "chore: upstream check ${VERSION}"
+          git push
+
+  build:
+    name: 构建缺失的变体
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+      variants: ${{ needs.check.outputs.variants }}
+      move_tags: true
+    secrets: inherit

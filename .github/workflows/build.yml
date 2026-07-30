@@ -1,0 +1,249 @@
+name: Build and push images
+
+# 被 watch-upstream.yml 调用，也可手动触发单独重建某个变体
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: '上游 tag，例如 v0.0.11'
+        required: true
+        type: string
+      variants:
+        description: '要构建的变体，逗号分隔或 JSON 数组'
+        required: false
+        default: 'base,all,cuda'
+        type: string
+      move_tags:
+        description: '是否同时更新滚动标签 (latest / base / cuda ...)'
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '上游 tag 或分支（留空 = 上游最新 release）'
+        required: false
+        type: string
+      variants:
+        description: '要构建的变体，逗号分隔: base,all,cuda'
+        required: false
+        default: 'base,all,cuda'
+        type: string
+      move_tags:
+        description: '是否同时更新滚动标签 (latest / base / cuda ...)'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  UPSTREAM_REPO: CVHub520/X-AnyLabeling-Server
+  DOCKERHUB_IMAGE: weidows/x-anylabeling-server-docker
+
+jobs:
+  prepare:
+    name: 解析版本与变体
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.p.outputs.version }}
+      matrix: ${{ steps.p.outputs.matrix }}
+      ghcr_image: ${{ steps.p.outputs.ghcr_image }}
+      dockerhub: ${{ steps.p.outputs.dockerhub }}
+      build_date: ${{ steps.p.outputs.build_date }}
+    steps:
+      - name: 解析输入
+        id: p
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_SLUG: ${{ github.repository }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_VARIANTS: ${{ inputs.variants }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${IN_VERSION:-}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq '.tag_name')
+            echo "未指定版本，使用上游最新 release: $VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+          # GHCR 要求镜像名全小写
+          echo "ghcr_image=ghcr.io/$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "dockerhub=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dockerhub=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 DOCKERHUB_TOKEN，本次只推送 GHCR"
+          fi
+
+          # "base,all" 或 '["base","all"]' 都归一化成 JSON 数组
+          WANT=$(printf '%s' "${IN_VARIANTS:-base,all,cuda}" \
+                 | tr -d '[]" ' | tr ',' '\n' | grep -v '^$' | jq -R . | jq -sc .)
+          echo "请求的变体: $WANT"
+
+          jq -nc --argjson want "$WANT" '
+            [
+              {name:"base", file:"Dockerfile",      target:"base",    desc:"CPU / 仅核心依赖"},
+              {name:"all",  file:"Dockerfile",      target:"all",     desc:"CPU / 全部 extras"},
+              {name:"cuda", file:"Dockerfile.cuda", target:"runtime", desc:"CUDA 12.6 / 全部 extras"}
+            ] | map(select(.name as $n | $want | index($n)))
+          ' > matrix.json
+
+          if [ "$(jq 'length' matrix.json)" -eq 0 ]; then
+            echo "::error::没有匹配的变体: ${IN_VARIANTS:-}（可选 base / all / cuda）"
+            exit 1
+          fi
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.variant.name }} (${{ matrix.variant.desc }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # 一个变体失败不影响其它变体，缺的下次定时任务会补建
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # all / cuda 镜像有好几个 GB，默认 runner 的 14GB 空闲盘会不够
+      - name: 清理 runner 磁盘
+        if: matrix.variant.name != 'base'
+        run: |
+          echo "清理前:"; df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/local/share/boost \
+                      /opt/hostedtoolcache/CodeQL "${AGENT_TOOLSDIRECTORY:-/tmp/none}" || true
+          sudo docker image prune -af || true
+          echo "清理后:"; df -h /
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 登录 Docker Hub
+        if: needs.prepare.outputs.dockerhub == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 计算镜像标签
+        id: tags
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          VARIANT: ${{ matrix.variant.name }}
+          GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}
+          USE_DOCKERHUB: ${{ needs.prepare.outputs.dockerhub }}
+          MOVE_TAGS: ${{ inputs.move_tags }}
+        run: |
+          set -euo pipefail
+
+          IMAGES="$GHCR_IMAGE"
+          if [ "$USE_DOCKERHUB" = "true" ]; then
+            IMAGES="$IMAGES docker.io/${DOCKERHUB_IMAGE}"
+          fi
+
+          case "$VARIANT" in
+            base) PINNED="${VERSION}-base"                        ; ROLLING="base slim"   ;;
+            all)  PINNED="${VERSION} ${VERSION}-cpu"              ; ROLLING="latest cpu"  ;;
+            cuda) PINNED="${VERSION}-cuda ${VERSION}-cuda12.6"    ; ROLLING="cuda gpu"    ;;
+            *)    echo "::error::未知变体 $VARIANT"; exit 1 ;;
+          esac
+
+          if [ "$MOVE_TAGS" != "true" ]; then
+            ROLLING=""
+          fi
+
+          {
+            echo 'tags<<TAGS_EOF'
+            for IMG in $IMAGES; do
+              for T in $PINNED $ROLLING; do
+                echo "${IMG}:${T}"
+              done
+            done
+            echo 'TAGS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./${{ matrix.variant.file }}
+          target: ${{ matrix.variant.target }}
+          push: true
+          platforms: linux/amd64
+          # 单平台构建，关掉 provenance 以免 registry 上多出 unknown/unknown 条目
+          provenance: false
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            UPSTREAM_REPO=${{ env.UPSTREAM_REPO }}
+            UPSTREAM_REF=${{ needs.prepare.outputs.version }}
+            BUILD_DATE=${{ needs.prepare.outputs.build_date }}
+          # cuda / all 的层加起来会超过 GitHub 10GB 缓存上限，只缓存 base 的全部层
+          cache-from: type=gha,scope=${{ matrix.variant.name }}
+          cache-to: type=gha,mode=${{ matrix.variant.name == 'base' && 'max' || 'min' }},scope=${{ matrix.variant.name }}
+
+      - name: 写入构建摘要
+        run: |
+          {
+            echo "### ${{ matrix.variant.name }} — ${{ matrix.variant.desc }}"
+            echo
+            echo '上游版本: `${{ needs.prepare.outputs.version }}`'
+            echo
+            echo '```'
+            echo "${{ steps.tags.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: 记录 release
+    needs: [prepare, build]
+    if: ${{ inputs.move_tags && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 创建/更新本仓库 release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: X-AnyLabeling-Server Docker ${{ needs.prepare.outputs.version }}
+          body: |
+            对应上游 [${{ needs.prepare.outputs.version }}](https://github.com/${{ env.UPSTREAM_REPO }}/releases/tag/${{ needs.prepare.outputs.version }}) 的自动构建。
+
+            | 变体 | Docker Hub | 说明 |
+            | --- | --- | --- |
+            | CPU 全功能 | `${{ env.DOCKERHUB_IMAGE }}:${{ needs.prepare.outputs.version }}` | 也是 `latest` |
+            | CPU 精简 | `${{ env.DOCKERHUB_IMAGE }}:${{ needs.prepare.outputs.version }}-base` | 仅核心依赖，只跑 API 类模型 |
+            | CUDA 12.6 | `${{ env.DOCKERHUB_IMAGE }}:${{ needs.prepare.outputs.version }}-cuda` | 需要 NVIDIA GPU |
+
+            GHCR 同名标签: `${{ needs.prepare.outputs.ghcr_image }}`
+
+            ```bash
+            docker run -d -p 8000:8000 ${{ env.DOCKERHUB_IMAGE }}:${{ needs.prepare.outputs.version }}
+            docker run -d --gpus all -p 8000:8000 ${{ env.DOCKERHUB_IMAGE }}:${{ needs.prepare.outputs.version }}-cuda
+            ```

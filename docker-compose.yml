@@ -1,0 +1,42 @@
+services:
+  # CPU 全功能版（含 ultralytics / transformers / sam3）
+  server:
+    image: weidows/x-anylabeling-server-docker:latest
+    container_name: x-anylabeling-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # GLM 等 API 类模型需要
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      # 在 server.yaml 里打开 security.api_key_enabled 后用它作为访问令牌
+      XANYLABELING_API_KEY: ${XANYLABELING_API_KEY:-}
+    volumes:
+      # 模型权重不打进镜像，放这里持久化，避免每次重建容器都重新下载
+      - ./weights:/app/weights
+      # 按需覆盖配置（单文件挂载，不要整目录挂载，否则会盖掉 configs/auto_labeling/）
+      # - ./server.yaml:/app/configs/server.yaml:ro
+      # - ./models.yaml:/app/configs/models.yaml:ro
+
+  # GPU 版：docker compose --profile gpu up -d
+  server-gpu:
+    profiles: ["gpu"]
+    image: weidows/x-anylabeling-server-docker:cuda
+    container_name: x-anylabeling-server-gpu
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      XANYLABELING_API_KEY: ${XANYLABELING_API_KEY:-}
+    volumes:
+      - ./weights:/app/weights
+      # - ./models.yaml:/app/configs/models.yaml:ro
+    # 需要宿主机装好 NVIDIA 驱动与 nvidia-container-toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

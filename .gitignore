@@ -1,0 +1,5 @@
+weights/
+logs/
+server.yaml
+models.yaml
+.env

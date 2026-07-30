@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1
+
+# X-AnyLabeling-Server 非官方 CUDA 镜像 (全部 extras + CUDA 版 PyTorch)
+# 上游: https://github.com/CVHub520/X-AnyLabeling-Server
+
+ARG CUDA_VERSION=12.6.3
+ARG UBUNTU_VERSION=22.04
+ARG PYTHON_VERSION=3.12
+ARG UV_VERSION=0.12.0
+ARG TORCH_INDEX=cu126
+
+# ---------------------------------------------------------------- 上游源码
+# 复用同一个 base image，避免为 clone 再拉一个 python:slim
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS source
+
+ARG UPSTREAM_REPO=CVHub520/X-AnyLabeling-Server
+ARG UPSTREAM_REF=main
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# ref 不存在就让构建失败，不要静默退回默认分支
+RUN git clone --depth 1 --branch "${UPSTREAM_REF}" \
+      "https://github.com/${UPSTREAM_REPO}.git" . \
+  && git rev-parse HEAD > UPSTREAM_SHA \
+  && rm -rf .git
+
+# ---------------------------------------------------------------- runtime
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+
+ARG PYTHON_VERSION
+ARG UV_VERSION
+ARG TORCH_INDEX
+ARG UPSTREAM_REF=main
+ARG BUILD_DATE
+
+LABEL org.opencontainers.image.title="X-AnyLabeling-Server" \
+      org.opencontainers.image.description="X-AnyLabeling-Server (CUDA 12.6, all extras)" \
+      org.opencontainers.image.source="https://github.com/CVHub520/X-AnyLabeling-Server" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.version="${UPSTREAM_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    UV_NO_CACHE=1 \
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       ca-certificates curl git \
+       libgl1 libglib2.0-0 libsm6 libxext6 libgomp1 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 22.04 自带 Python 3.10，而 sam3 要求 3.12+。
+# 直接用 uv 托管的独立 CPython，省掉 deadsnakes PPA 这一层依赖
+COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /usr/local/bin/uv
+RUN uv venv --python "${PYTHON_VERSION}" /opt/venv
+
+WORKDIR /app
+COPY --from=source /src /app
+
+# CUDA 版 torch 必须先装，否则 [all] 会从 PyPI 解析出别的 torch 变体
+RUN uv pip install torch torchvision \
+      --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}" \
+      --extra-index-url https://pypi.org/simple \
+  && uv pip install -e ".[all]" \
+  && mkdir -p /app/weights /app/logs
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+
+CMD ["x-anylabeling-server", "--host", "0.0.0.0", "--port", "8000"]

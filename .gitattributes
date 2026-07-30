@@ -1,0 +1,6 @@
+# 这些文件最终都在 Linux 上执行：Dockerfile 的行续接和 workflow 里内嵌的 bash
+# 都会被 CRLF 弄坏（典型报错 $'\r': command not found），强制存成 LF。
+* text=auto eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+Dockerfile* text eol=lf
