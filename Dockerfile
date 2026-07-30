@@ -85,14 +85,12 @@ RUN apt-get update \
        libgl1 libglib2.0-0 libsm6 libxext6 \
   && rm -rf /var/lib/apt/lists/*
 
-# 先从 PyTorch CPU 索引装 torch，否则下一步会从 PyPI 拉约 2.5GB 的 CUDA 版。
-# uv 默认 first-index 策略: torch/torchvision 命中 pytorch 索引，
-# 其余传递依赖回落到 PyPI
-RUN uv pip install torch torchvision \
-      --index-url https://download.pytorch.org/whl/cpu \
-      --extra-index-url https://pypi.org/simple
-
-# [all] 里 sam3 要求 torch>=2.7.0，上一步装的 CPU 版已满足，不会被覆盖重装
-RUN uv pip install -e ".[all]"
+# --torch-backend 只把 torch 生态的包路由到对应的 PyTorch 索引，其余依赖照常走 PyPI。
+#
+# 不要改回 "--index-url <pytorch> --extra-index-url <pypi>" 那种手写法:
+# uv 里 --extra-index-url 的优先级高于 --index-url（和 pip 的直觉相反），
+# torch 会从 PyPI 解析成自带 CUDA 库的版本，实测会往 CPU 镜像里塞进
+# nvidia-cublas / nvidia-cudnn-cu13 等整套 CUDA 13 库。
+RUN uv pip install --torch-backend=cpu -e ".[all]"
 
 LABEL org.opencontainers.image.description="X-AnyLabeling-Server (CPU, all extras)"

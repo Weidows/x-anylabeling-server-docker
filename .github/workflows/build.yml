@@ -211,14 +211,32 @@ jobs:
           cache-to: ${{ matrix.variant.cache_to }}
 
       - name: 写入构建摘要
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          VARIANT: ${{ matrix.variant.name }}
+          DESC: ${{ matrix.variant.desc }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          set -uo pipefail
+
+          FIRST=$(printf '%s\n' "$TAGS" | head -n1)
+          SIZE="未知"
+          RAW=$(docker buildx imagetools inspect --raw "$FIRST" 2>/dev/null || true)
+          if [ -n "$RAW" ]; then
+            BYTES=$(printf '%s' "$RAW" | jq '[.layers[]?.size] | add // 0')
+            if [ "${BYTES:-0}" -gt 0 ]; then
+              SIZE=$(awk -v b="$BYTES" 'BEGIN{ printf "%.2f GiB（压缩后）", b/1073741824 }')
+            fi
+          fi
+
           {
-            echo "### ${{ matrix.variant.name }} — ${{ matrix.variant.desc }}"
+            echo "### ${VARIANT} — ${DESC}"
             echo
-            echo '上游版本: `${{ needs.prepare.outputs.version }}`'
+            echo "- 上游版本: \`${VERSION}\`"
+            echo "- 镜像大小: ${SIZE}"
             echo
             echo '```'
-            echo "${{ steps.tags.outputs.tags }}"
+            printf '%s\n' "$TAGS"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

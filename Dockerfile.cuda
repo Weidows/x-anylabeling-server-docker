@@ -7,7 +7,8 @@ ARG CUDA_VERSION=12.6.3
 ARG UBUNTU_VERSION=22.04
 ARG PYTHON_VERSION=3.12
 ARG UV_VERSION=0.12.0
-ARG TORCH_INDEX=cu126
+# uv 的 --torch-backend 取值，要和上面的 CUDA_VERSION 对得上
+ARG TORCH_BACKEND=cu126
 
 # COPY --from= 不支持变量展开，所以先把带版本的 uv 镜像固定成一个命名 stage
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uvbin
@@ -37,7 +38,7 @@ RUN git clone --depth 1 --branch "${UPSTREAM_REF}" \
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS runtime
 
 ARG PYTHON_VERSION
-ARG TORCH_INDEX
+ARG TORCH_BACKEND
 ARG UPSTREAM_REF=main
 ARG BUILD_DATE
 
@@ -70,11 +71,9 @@ RUN uv venv --python "${PYTHON_VERSION}" /opt/venv
 WORKDIR /app
 COPY --from=source /src /app
 
-# CUDA 版 torch 必须先装，否则 [all] 会从 PyPI 解析出别的 torch 变体
-RUN uv pip install torch torchvision \
-      --index-url "https://download.pytorch.org/whl/${TORCH_INDEX}" \
-      --extra-index-url https://pypi.org/simple \
-  && uv pip install -e ".[all]" \
+# --torch-backend 把 torch 生态路由到 cu126 索引，其余依赖走 PyPI。
+# 不用 auto: 构建容器里没有 GPU 驱动，auto 会退化成 cpu。
+RUN uv pip install --torch-backend="${TORCH_BACKEND}" -e ".[all]" \
   && mkdir -p /app/weights /app/logs
 
 EXPOSE 8000
