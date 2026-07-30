@@ -9,6 +9,9 @@ ARG PYTHON_VERSION=3.12
 ARG UV_VERSION=0.12.0
 ARG TORCH_INDEX=cu126
 
+# COPY --from= 不支持变量展开，所以先把带版本的 uv 镜像固定成一个命名 stage
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uvbin
+
 # ---------------------------------------------------------------- 上游源码
 # 复用同一个 base image，避免为 clone 再拉一个 python:slim
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS source
@@ -34,7 +37,6 @@ RUN git clone --depth 1 --branch "${UPSTREAM_REF}" \
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS runtime
 
 ARG PYTHON_VERSION
-ARG UV_VERSION
 ARG TORCH_INDEX
 ARG UPSTREAM_REF=main
 ARG BUILD_DATE
@@ -62,7 +64,7 @@ RUN apt-get update \
 
 # Ubuntu 22.04 自带 Python 3.10，而 sam3 要求 3.12+。
 # 直接用 uv 托管的独立 CPython，省掉 deadsnakes PPA 这一层依赖
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /usr/local/bin/uv
+COPY --from=uvbin /uv /usr/local/bin/uv
 RUN uv venv --python "${PYTHON_VERSION}" /opt/venv
 
 WORKDIR /app

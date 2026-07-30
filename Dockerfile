@@ -10,6 +10,9 @@
 ARG PYTHON_VERSION=3.12
 ARG UV_VERSION=0.12.0
 
+# COPY --from= 不支持变量展开，所以先把带版本的 uv 镜像固定成一个命名 stage
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uvbin
+
 # ---------------------------------------------------------------- 上游源码
 FROM python:${PYTHON_VERSION}-slim AS source
 
@@ -34,11 +37,10 @@ RUN git clone --depth 1 --branch "${UPSTREAM_REF}" \
 # ---------------------------------------------------------------- base
 FROM python:${PYTHON_VERSION}-slim AS base
 
-ARG UV_VERSION
 ARG UPSTREAM_REF=main
 ARG BUILD_DATE
 
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /usr/local/bin/uv
+COPY --from=uvbin /uv /usr/local/bin/uv
 
 LABEL org.opencontainers.image.title="X-AnyLabeling-Server" \
       org.opencontainers.image.description="X-AnyLabeling-Server (CPU, core deps only)" \
