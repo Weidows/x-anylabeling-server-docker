@@ -96,11 +96,14 @@ jobs:
           jq -nc --argjson want "$WANT" '
             [
               {name:"base", file:"Dockerfile",      target:"base",    desc:"CPU / 仅核心依赖",
-               cache_from:"type=gha,scope=base", cache_to:"type=gha,mode=max,scope=base"},
+               cache_from:"type=gha,scope=base", cache_to:"type=gha,mode=max,scope=base",
+               smoke:true},
               {name:"all",  file:"Dockerfile",      target:"all",     desc:"CPU / 全部 extras",
-               cache_from:"", cache_to:""},
+               cache_from:"", cache_to:"",
+               smoke:true},
               {name:"cuda", file:"Dockerfile.cuda", target:"runtime", desc:"CUDA 12.6 / 全部 extras",
-               cache_from:"", cache_to:""}
+               cache_from:"", cache_to:"",
+               smoke:false}
             ] | map(select(.name as $n | $want | index($n)))
           ' > matrix.json
 
@@ -210,6 +213,39 @@ jobs:
           cache-from: ${{ matrix.variant.cache_from }}
           cache-to: ${{ matrix.variant.cache_to }}
 
+      # cuda 跳过: 拉回一个 10GB 级镜像会挤掉 runner 剩余磁盘，
+      # 而且没有 GPU 的 runner 上这个测试能验证的东西也有限
+      - name: 冒烟测试（启动容器并请求 /health）
+        if: matrix.variant.smoke
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -euo pipefail
+          IMG=$(printf '%s\n' "$TAGS" | head -n1)
+
+          docker pull -q "$IMG"
+          docker image inspect "$IMG" --format '{{.Size}}' \
+            | awk '{ printf "解压后大小: %.2f GiB\n", $1/1073741824 }'
+
+          docker run -d --name smoke -p 8000:8000 "$IMG"
+
+          # 启动时会加载 models.yaml 里启用的模型，首次可能要下权重，给足时间
+          for i in $(seq 1 180); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+              echo "/health 在 ${i}s 内就绪"
+              echo "--- /health ---";    curl -fsS http://127.0.0.1:8000/health;    echo
+              echo "--- /v1/models ---"; curl -fsS http://127.0.0.1:8000/v1/models; echo
+              docker rm -f smoke >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::容器 180s 内没有通过 /health"
+          docker logs smoke
+          docker rm -f smoke >/dev/null
+          exit 1
+
       - name: 写入构建摘要
         env:
           TAGS: ${{ steps.tags.outputs.tags }}
@@ -228,6 +264,9 @@ jobs:
               SIZE=$(awk -v b="$BYTES" 'BEGIN{ printf "%.2f GiB（压缩后）", b/1073741824 }')
             fi
           fi
+
+          # 同时打到 stdout，方便在日志里直接看到，不用翻 summary 页面
+          echo "镜像大小: ${SIZE}"
 
           {
             echo "### ${VARIANT} — ${DESC}"
