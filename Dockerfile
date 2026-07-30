@@ -64,11 +64,12 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=source /src /app
 
-# 用 editable 安装: app/core/config.py 按 <repo_root>/configs/server.yaml
-# 解析默认配置，源码留在 /app 才能让 /app/configs 成为可挂载覆盖的位置
-# 显式补 packaging: 上游 app/utils/update_checker.py 会 import 它，但 pyproject
-# 的核心依赖里没声明（[all] 是靠 transformers 等的传递依赖带进来的），只装核心
-# 依赖时服务会直接 ModuleNotFoundError 起不来。
+# editable 安装: app/core/config.py 按 <repo_root>/configs/server.yaml 解析默认
+# 配置，源码留在 /app 才能让 /app/configs 成为可挂载覆盖的位置。
+#
+# 额外显式补一个 packaging: 上游 app/utils/update_checker.py 会 import 它，但
+# pyproject 的核心依赖里没声明（[all] 是靠 transformers 的传递依赖带进来的），
+# 只装核心依赖时服务会直接 ModuleNotFoundError 起不来。
 RUN uv pip install -e . packaging \
   && mkdir -p /app/weights /app/logs
 
