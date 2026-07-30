@@ -10,11 +10,13 @@ Docker 镜像。上游没有提供官方镜像，这个仓库按周检查上游 
 
 ## 镜像标签
 
-| 标签 | 变体 | 说明 |
-| --- | --- | --- |
-| `latest` `cpu` `<ver>` `<ver>-cpu` | CPU 全功能 | 含 `[all]` extras 与 CPU 版 PyTorch，约 6-9GB |
-| `base` `slim` `<ver>-base` | CPU 精简 | 只装核心依赖，约 1GB，**只能跑 API 类模型** |
-| `cuda` `gpu` `<ver>-cuda` `<ver>-cuda12.6` | CUDA 12.6 | 含 `[all]` extras 与 CUDA 版 PyTorch，10GB+ |
+| 标签 | 变体 | 拉取大小 | 磁盘占用 | 说明 |
+| --- | --- | --- | --- | --- |
+| `latest` `cpu` `<ver>` `<ver>-cpu` | CPU 全功能 | 0.70 GiB | 2.23 GiB | 含 `[all]` extras 与 CPU 版 PyTorch |
+| `base` `slim` `<ver>-base` | CPU 精简 | 0.16 GiB | 0.45 GiB | 只装核心依赖，**只能跑 API 类模型** |
+| `cuda` `gpu` `<ver>-cuda` `<ver>-cuda12.6` | CUDA 12.6 | 5.78 GiB | 10.36 GiB | 含 `[all]` extras 与 `cu126` 版 PyTorch |
+
+体积是 v0.0.11 的实测值，每次构建都会把当次数字写进 Actions 的 job summary。
 
 `<ver>` 是上游 release tag，例如 `v0.0.11`。带版本号的标签不会被覆盖，
 `latest` / `base` / `cuda` 这类滚动标签会随新版本移动。
@@ -77,12 +79,24 @@ docker run -d -p 8000:8000 \
 是相对路径（例如 `yolo11n.pt`），首次加载时按各自框架的规则下载或查找。挂载
 `/app/weights` 只是给你一个持久化位置，具体路径要在模型配置里指定。
 
+## 与上游的唯一差异
+
+`base` 变体额外装了一个 `packaging`。上游 `app/utils/update_checker.py` 会
+`import packaging`，但 `pyproject.toml` 的核心依赖里没声明它 —— `[all]` extras
+是靠 transformers 的传递依赖顺带装上的，所以只装核心依赖时服务会直接
+`ModuleNotFoundError: No module named 'packaging'` 起不来。
+
+除此之外镜像内容与上游 release 完全一致，配置文件也没有改动。
+
 ## 已知注意点
 
 - **`base` 变体的启动告警**：上游默认 `models.yaml` 启用了 `yolo11n`，而 `base`
   没装 ultralytics，启动日志里会出现一条加载失败。上游代码对这种情况是
-  catch + log，服务本身照常起来，`/health` 正常。想去掉告警就挂载一个自己的
-  `models.yaml`。
+  catch + log，服务本身照常起来，`/health` 正常（实测 3s 就绪）。想去掉告警就
+  挂载一个自己的 `models.yaml`。
+- **`all` / `cuda` 会自动下载 yolo11n 权重**：上游默认启用 `yolo11n`，
+  ultralytics 首次加载时会去 GitHub 拉 `yolo11n.pt`。挂载 `/app/weights` 或改
+  `models.yaml` 可以避免每次重建容器都重新下载。
 - **AGPL-3.0**：镜像内的软件是 AGPL-3.0 的。如果你把它作为网络服务对外提供，
   AGPL 的条款适用于你。本仓库自身的打包文件是 MIT，见 [LICENSE](LICENSE)。
 - 本仓库与上游作者无关，问题请先确认是镜像打包问题再提。
@@ -149,14 +163,20 @@ gh secret set DOCKERHUB_TOKEN -R Weidows/x-anylabeling-server-docker   # 粘贴 
 
 - **`git clone --branch <ref>` 不做兜底**。ref 不存在就让构建失败，否则会把默认
   分支的代码打上版本号标签推出去。
-- **CPU 版先从 PyTorch CPU 索引装 torch**，否则 `[all]` 会从 PyPI 解析出约 2.5GB
-  的 CUDA 版 wheel。
+- **torch 用 `uv pip install --torch-backend=cpu|cu126`**，不要改回手写
+  `--index-url <pytorch> --extra-index-url <pypi>`：uv 里 `--extra-index-url`
+  的优先级**高于** `--index-url`（和 pip 的直觉相反），torch 会从 PyPI 解析成
+  自带 CUDA 库的版本。实测那种写法会往 CPU 镜像里塞进整套 CUDA 13 库，
+  也让 CUDA 镜像装成 CUDA 13 而不是标签宣称的 cu126。
 - **CUDA 版用 uv 托管的独立 CPython 3.12**（venv 在 `/opt/venv`）。Ubuntu 22.04
   自带 3.10，而 sam3 要求 3.12+，这样就不用引入 deadsnakes PPA。
 - **editable 安装**。上游按 `<repo_root>/configs/server.yaml` 解析默认配置，源码
   留在 `/app` 才能让 `/app/configs` 成为可挂载覆盖的位置。
-- 构建 `all` / `cuda` 前会清理 runner 磁盘，默认 14GB 空闲盘装不下这两个镜像。
-- GitHub Actions 缓存上限 10GB，所以只有 `base` 用 `mode=max`，另两个用 `mode=min`。
+- **每个变体推送后都会真起一遍容器等 `/health`**。「构建成功」证明不了服务能跑 ——
+  `base` 就曾经构建通过但启动即崩（上游漏了 `packaging`），是这一步抓到的。
+- 构建 `all` / `cuda` 前会清理 runner 磁盘，默认空闲盘装不下这两个镜像。
+- GitHub Actions 缓存配额是每仓库 10GB，所以只有 `base` 用 `type=gha`；
+  `all` / `cuda` 不进缓存，否则会把 `base` 的挤掉甚至让 cache export 失败。
 
 本地构建：
 
