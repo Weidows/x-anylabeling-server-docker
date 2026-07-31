@@ -1,0 +1,45 @@
+# 启用哪些模型。改完 docker compose restart 生效。
+#
+# 加载失败不会让服务崩（上游是 catch + log），所以启用了但权重没准备好，
+# 只会在日志里看到一条 error，/health 依然是 healthy。
+#
+# 每个模型的 device、model_path 等参数在 configs/auto_labeling/<model_id>.yaml 里，
+# 要改就把对应文件单独挂进容器（见 docker-compose.yml 里 yolo11n 的例子）。
+
+enabled_models:
+  # 走 GPU：device 已在 ./auto_labeling/yolo11n.yaml 里改成 cuda:0
+  - yolo11n
+
+  # --- 以下按需打开，注意各自的前置条件 ---
+
+  # ultralytics 系列，权重会自动下载到 /app/weights
+  # - yolo11n_seg
+  # - yolo11n_pose
+  # - yolo11n_obb
+  # - yolo11n_track
+  # - yolo11s
+  # - yoloe_26s_seg
+  # - yoloe_26s_seg_pf
+
+  # SAM 系列，配置里默认就是 cuda:0，但需要自己准备权重放到 /app/weights
+  # sam3 还要额外的 bpe_simple_vocab_16e6.txt.gz
+  # - segment_anything_2
+  # - segment_anything_3
+  # - segment_anything_3_video
+
+  # transformers 系列，model_path 是 HF repo id，首次加载会下几个 GB
+  # 到 HF_HOME（已指向 /app/weights/huggingface）
+  # - qwen3vl_caption_transformers
+  # - qwen3vl_grounding_transformers
+  # - locateanything
+  # - rexomni
+  # - pp_doclayout_v3
+  # - paddleocr_vl_1_5
+  # - ppocr_layoutstructv3_vl_1_5
+
+  # API 类模型，不吃 GPU，但要配对应的 key（见 .env）
+  # - glm_4_6v_grounding_api
+  # - qwen3vl_caption_api
+
+  # 需要手动从上游 v0.0.9 release assets 下载模型文件
+  # - geco2

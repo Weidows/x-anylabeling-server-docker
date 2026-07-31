@@ -1,0 +1,78 @@
+# X-AnyLabeling-Server CUDA 部署
+#
+# 前置条件（宿主机）:
+#   1. NVIDIA 驱动
+#   2. nvidia-container-toolkit，装完要重启 docker
+#      验证: docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
+#
+# 用法:
+#   cp .env.example .env      # 填 API key、端口等
+#   docker compose up -d
+#   curl http://localhost:8000/health
+
+services:
+  x-anylabeling-server:
+    image: weidows/x-anylabeling-server-docker:${IMAGE_TAG:-cuda}
+    container_name: x-anylabeling-server
+    restart: unless-stopped
+
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+
+    # 上游用 CWD 作为相对 model_path 的落点（例如 yolo11n.pt），指到挂载卷里，
+    # 重建容器就不用重新下权重。
+    # 配置解析不受影响: config_dir 和 server.yaml 的默认路径在上游代码里都是
+    # 基于 __file__ 算的绝对路径，与 CWD 无关。
+    working_dir: /app/weights
+
+    environment:
+      # 只把「启用哪些模型」的清单挪到外面，不整目录挂 /app/configs
+      XANYLABELING_MODELS_CONFIG: /config/models.yaml
+
+      # 各框架的下载缓存统一落到挂载卷。transformers 类模型（如 Qwen3-VL）
+      # 动辄几个 GB，不设这些就会每次重建容器重下一遍。
+      HF_HOME: /app/weights/huggingface
+      TORCH_HOME: /app/weights/torch
+      YOLO_CONFIG_DIR: /app/weights/ultralytics
+
+      # GLM 等智谱 API 模型需要
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      # 仅在 server.yaml 里开了 security.api_key_enabled 时才有意义
+      XANYLABELING_API_KEY: ${XANYLABELING_API_KEY:-}
+
+    volumes:
+      - ./weights:/app/weights
+      - ./models.yaml:/config/models.yaml:ro
+
+      # 每个模型的 device / 参数覆盖只能单文件挂。
+      # 上游把 config_dir 硬编码成 /app/configs，整目录挂载会盖掉
+      # auto_labeling/ 下另外 20 个模型定义。
+      - ./auto_labeling/yolo11n.yaml:/app/configs/auto_labeling/yolo11n.yaml:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all           # 指定单卡: 换成 device_ids: ["0"]
+              capabilities: [gpu]
+    # Compose v2.30+ 也可以直接写 gpus: all 代替上面整段 deploy，
+    # 这里用 deploy 写法是为了兼容旧版本
+
+    # PyTorch 的 dataloader 走共享内存，默认 64MB 不够
+    shm_size: 2gb
+
+    # 镜像自带 HEALTHCHECK，这里只放宽 start_period:
+    # 冷启动要下模型权重，第一次可能要好几分钟
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

@@ -3,3 +3,6 @@ logs/
 server.yaml
 models.yaml
 .env
+
+# deploy/ 下的 models.yaml 是要提交的示例，别被上面的规则吃掉
+!deploy/**/models.yaml

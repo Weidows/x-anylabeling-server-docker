@@ -46,12 +46,46 @@ docker run -d --name x-anylabeling-server \
   weidows/x-anylabeling-server-docker:cuda
 ```
 
-或者用 compose：
+或者用 compose（CPU，仅够快速试跑）：
 
 ```bash
-docker compose up -d                  # CPU
-docker compose --profile gpu up -d    # GPU
+docker compose up -d
 ```
+
+## GPU 部署
+
+`deploy/cuda/` 是一套可以直接用的完整配置：
+
+```bash
+cd deploy/cuda
+cp .env.example .env      # 填端口、API key
+docker compose up -d
+curl http://localhost:8000/health
+```
+
+前置条件是宿主机装好 NVIDIA 驱动和 `nvidia-container-toolkit`，先验一下：
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
+```
+
+里面处理了几个 `docker run` 一把梭会踩的点：
+
+- **模型默认跑在 CPU 上**。`device` 是每个模型各自配的，上游
+  `configs/auto_labeling/yolo11n.yaml` 写死了 `device: "cpu"` —— 光用 CUDA 镜像
+  不改配置，推理还是在 CPU。`deploy/cuda/auto_labeling/yolo11n.yaml` 是改成
+  `cuda:0` 的覆盖示例（SAM 系列上游默认就是 `cuda:0`，不用改）。
+- **配置只能单文件挂**。上游把 `config_dir` 硬编码成 `/app/configs`，整目录挂载会
+  盖掉 `auto_labeling/` 下那 21 个模型定义。「启用哪些模型」的清单则通过
+  `XANYLABELING_MODELS_CONFIG` 挪到了容器外，不占用那个目录。
+- **缓存持久化**。`HF_HOME` / `TORCH_HOME` / `YOLO_CONFIG_DIR` 都指到 `/app/weights`，
+  `working_dir` 也设成了 `/app/weights`（相对 `model_path` 的落点）。不设这些的话，
+  Qwen3-VL 这类几个 GB 的模型每次重建容器都要重下。
+- **`shm_size: 2gb`**。PyTorch dataloader 走共享内存，容器默认 64MB 不够。
+- **`start_period: 10m`**。冷启动要下权重，健康检查给短了会被反复重启。
+
+按需启用模型改 `deploy/cuda/models.yaml`，里面把 21 个模型按「权重怎么来」分组
+注释好了。改完 `docker compose restart` 生效。
 
 ## 配置
 
