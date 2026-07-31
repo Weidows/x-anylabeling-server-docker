@@ -3,6 +3,11 @@
 [X-AnyLabeling-Server](https://github.com/CVHub520/X-AnyLabeling-Server) 的非官方
 Docker 镜像。上游没有提供官方镜像，这个仓库按周检查上游 release，有新版本就自动构建并推送。
 
+> **这是纯推理 API 服务，不带 Web 界面。** 浏览器打开 `http://localhost:8000/`
+> 会看到 404，这是正常的。界面在
+> [X-AnyLabeling 桌面端](https://github.com/CVHub520/X-AnyLabeling)，由它连这个服务。
+> 详见 [下面这节](#这是-api-服务没有-web-界面)。
+
 - **构建配置与 Issue**: https://github.com/Weidows/x-anylabeling-server-docker
 - **上游项目**: https://github.com/CVHub520/X-AnyLabeling-Server
 - Docker Hub: [`weidows/x-anylabeling-server-docker`](https://hub.docker.com/r/weidows/x-anylabeling-server-docker)
@@ -51,6 +56,47 @@ docker run -d --name x-anylabeling-server \
 ```bash
 docker compose up -d
 ```
+
+## 这是 API 服务，没有 Web 界面
+
+根路径 `/` 没有注册任何路由，也没有挂载静态文件，所以 `http://localhost:8000/`
+返回 404 —— 服务是好的。全部路由如下：
+
+| 路由 | 方法 | 说明 |
+| --- | --- | --- |
+| `/health` | GET | 健康检查，返回已加载模型数 |
+| `/v1/models` | GET | 列出已加载的模型 |
+| `/v1/models/{model_id}/info` | GET | 单个模型的元信息 |
+| `/v1/predict` | POST | 图片推理 |
+| `/v1/video/init` | POST | 视频会话初始化 |
+| `/v1/video/prompt` | POST | 加提示（点/框/文本）|
+| `/v1/video/propagate` | POST | 逐帧传播 |
+| `/v1/video/propagate/stream` | POST | 传播（流式）|
+| `/v1/video/status/{task_id}` | GET | 任务状态 |
+| `/v1/video/cancel/{task_id}` | POST | 取消任务 |
+| `/v1/video/cleanup/{session_id}` | POST | 清理会话 |
+
+用浏览器唯一能看的是 FastAPI 自带的接口文档（上游没关掉）：
+
+- `http://localhost:8000/docs` — Swagger UI，可以直接点着调接口
+- `http://localhost:8000/redoc` — ReDoc
+- `http://localhost:8000/openapi.json` — OpenAPI schema
+
+### 让 X-AnyLabeling 桌面端连上来
+
+1. 装[X-AnyLabeling 客户端](https://github.com/CVHub520/X-AnyLabeling)
+2. 改 `~/.xanylabelingrc`：
+
+   ```yaml
+   server_url: http://127.0.0.1:8000   # 服务不在本机就改成对应地址
+   ```
+
+3. 客户端里按 `Ctrl+A` 打开 AI 自动标注，模型下拉框里选
+   **CVHub** → **Remote-Server**，就能看到这个服务上已加载的模型
+
+注意客户端读的是**已加载**的模型，所以 `models.yaml` 里没启用、或者启用了但权重
+缺失加载失败的，下拉框里都不会出现。`/health` 返回的 `models_loaded` 和
+`/v1/models` 可以用来对账。
 
 ## GPU 部署
 

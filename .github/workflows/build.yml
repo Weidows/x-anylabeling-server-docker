@@ -240,6 +240,16 @@ jobs:
               echo "/health 在 ${i}s 内就绪"
               echo "--- /health ---";    curl -fsS http://127.0.0.1:8000/health;    echo
               echo "--- /v1/models ---"; curl -fsS http://127.0.0.1:8000/v1/models; echo
+
+              # README 告诉用户「浏览器打开 /docs」，这里确认上游确实没关掉自带文档；
+              # 顺带确认 / 是 404（服务没有 Web 界面，这是预期行为，不是部署坏了）
+              for path in /docs /redoc /openapi.json; do
+                CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000${path}")
+                echo "GET ${path} -> ${CODE}"
+                [ "$CODE" = "200" ] || { echo "::error::${path} 返回 ${CODE}，README 里关于接口文档的说明需要更新"; docker rm -f smoke >/dev/null; exit 1; }
+              done
+              echo "GET / -> $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/) (预期 404)"
+
               docker rm -f smoke >/dev/null
               exit 0
             fi
