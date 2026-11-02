@@ -1,7 +1,11 @@
 {
   "upstream_repo": "CVHub520/X-AnyLabeling-Server",
-  "version": "v0.0.12",
-  "upstream_sha": "7b8b522a0a54f591316d39fbfec2b1bd3d309bb8",
-  "checked_at": "2026-10-26T08:53:43Z",
-  "queued_variants": []
+  "version": "v0.0.14",
+  "upstream_sha": "d6e1dbeb838a6c1f858bb22f1a10c698b8e3e4f4",
+  "checked_at": "2026-11-02T11:04:03Z",
+  "queued_variants": [
+    "base",
+    "all",
+    "cuda"
+  ]
 }
